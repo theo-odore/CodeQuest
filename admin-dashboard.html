@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="description" content="CodeQuest control room — run a live quiz round and coding challenge, and publish combined results." />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230B0E14'/%3E%3Crect x='6' y='6' width='52' height='52' rx='10' fill='%23141924' stroke='%235EE7FF' stroke-width='2'/%3E%3Ctext x='32' y='42' font-family='monospace' font-weight='800' font-size='28' fill='%235EE7FF' text-anchor='middle'%3EQ%3C/text%3E%3C/svg%3E" />
+<title>CodeQuest — Control Room</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+<div class="loading-overlay" id="loadingOverlay">
+  <div class="loading-box">
+    <div class="brand"><span class="dot"></span>CODEQUEST</div>
+    <div class="loading-spinner"></div>
+    <div class="panel-sub">Connecting to the control room…</div>
+  </div>
+</div>
+
+<div class="conn-banner hidden" id="connBanner">⚠ Reconnecting to Firebase — changes may not save until this clears</div>
+
+<div class="shell">
+  <div class="topbar">
+    <div class="brand"><span class="dot"></span>CODEQUEST <span class="tag">control room</span></div>
+    <div style="display:flex; align-items:center; gap:10px;">
+      <span class="panel-sub" id="participantCount">0 connected</span>
+      <span class="conn-dot connected" id="connDot">Live</span>
+      <button class="btn btn-sm" id="logoutBtn">Sign out</button>
+    </div>
+  </div>
+
+  <div class="main">
+
+    <!-- EVENT OVERVIEW -->
+    <section class="panel" id="overviewPanel">
+      <div class="panel-head">
+        <div class="panel-title"><span class="n">00</span>Event overview</div>
+        <div class="panel-sub">Everything at a glance — scroll down for controls</div>
+      </div>
+      <div class="status-grid" id="statusGrid"></div>
+    </section>
+
+    <!-- TIMER -->
+    <section class="panel">
+      <div class="panel-head">
+        <div class="panel-title"><span class="n">01</span>Quiz control</div>
+        <div class="panel-sub" id="timerStatusLabel">Not started</div>
+      </div>
+      <div class="timer-block">
+        <div class="timer-display" id="timerDisplay">00:00</div>
+        <div class="field" style="margin:0; min-width:150px;">
+          <label for="durationInput">Quiz duration (minutes)</label>
+          <input id="durationInput" type="number" min="1" value="20" />
+        </div>
+        <button class="btn btn-primary" id="startTimerBtn">Start quiz</button>
+        <button class="btn" id="resetTimerBtn">Reset timer</button>
+      </div>
+      <p class="panel-sub" style="margin-top:12px;">
+        Starting the quiz begins one shared countdown for every participant — whoever joins
+        mid-quiz drops straight into it. Once time's up, anyone still arriving is sent straight
+        to the coding challenge page instead of the quiz.
+      </p>
+    </section>
+
+    <!-- KEYBOARD RELEASE GRID -->
+    <section class="panel">
+      <div class="panel-head">
+        <div class="panel-title"><span class="n">02</span>Release questions</div>
+        <div style="display:flex; align-items:center; gap:14px; flex-wrap:wrap;">
+          <div class="panel-sub">Press a key to broadcast that question to every connected device</div>
+          <button class="btn btn-sm" id="resetReleasesBtn">Reset releases</button>
+        </div>
+      </div>
+      <div class="keyboard" id="keyboard"></div>
+      <div class="kbd-legend">
+        <span><span class="swatch easy"></span>Easy — top row</span>
+        <span><span class="swatch medium"></span>Medium — home row</span>
+        <span><span class="swatch hard"></span>Hard — bottom row</span>
+        <span style="color:var(--text-faint)">Filled key = released</span>
+      </div>
+    </section>
+
+    <!-- QUESTION MANAGEMENT -->
+    <section class="panel">
+      <div class="panel-head">
+        <div class="panel-title"><span class="n">03</span>Question bank</div>
+        <button class="btn btn-primary btn-sm" id="newQuestionBtn">+ Add question</button>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>Key</th><th>Serial</th><th>Difficulty</th><th>Question</th><th>Score</th><th>Status</th><th></th></tr>
+          </thead>
+          <tbody id="questionTableBody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- LEADERBOARD -->
+    <section class="panel" id="leaderboardPanel">
+      <div class="panel-head">
+        <div class="panel-title"><span class="n">04</span>Leaderboard</div>
+        <div class="panel-sub" id="scoreReleaseStatus">Scores not released yet</div>
+      </div>
+
+      <div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom:18px;">
+        <button class="btn btn-danger" id="releaseScoreBtn">Publish final results</button>
+        <button class="btn" id="exportDataBtn">Export data (.xlsx)</button>
+      </div>
+
+      <div class="stat-row" style="margin-bottom:18px;">
+        <div class="stat-chip"><div class="label">Participants</div><div class="value" id="statTotal">0</div></div>
+        <div class="stat-chip"><div class="label">Completed quiz</div><div class="value" id="statCompleted">0</div></div>
+        <div class="stat-chip"><div class="label">Top combined score</div><div class="value" id="statTop">—</div></div>
+      </div>
+
+      <div id="podiumWrap" class="hidden">
+        <div class="podium" id="podium"></div>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>#</th><th>Name</th><th>Lab</th><th>Terminal</th><th>Quiz (100)</th><th>Code (100)</th><th>Total (200)</th><th>Time</th></tr>
+          </thead>
+          <tbody id="leaderboardBody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- CODING CHALLENGE -->
+    <section class="panel" id="codeChallengePanel">
+      <div class="panel-head">
+        <div class="panel-title"><span class="n">05</span>Coding challenge <span style="color:var(--text-faint); font-weight:400;">— worth 100 marks</span></div>
+        <div class="panel-sub" id="ccStatus">Nothing set up yet</div>
+      </div>
+      <p class="panel-sub" style="margin-bottom:6px;">
+        Releasing this sends every participant — regardless of where they are in the quiz —
+        to a shared page where they write and submit code for this problem.
+      </p>
+      <p class="panel-sub" id="ccReadinessStat" style="margin-bottom:16px; color:var(--accent);">
+        No participants connected yet
+      </p>
+
+      <div class="field">
+        <label for="ccTitle">Problem title</label>
+        <input type="text" id="ccTitle" placeholder="e.g. Reverse a Linked List" />
+      </div>
+      <div class="grid-2">
+        <div class="field" style="grid-column: 1 / -1;">
+          <label for="ccStatement">Problem statement</label>
+          <textarea id="ccStatement" rows="6" placeholder="Describe the problem, input/output format, and constraints…" style="width:100%; background:#0E1219; border:1px solid var(--border); color:var(--text); border-radius:var(--radius); padding:11px 12px; font-size:14px; font-family:var(--font-body); resize:vertical;"></textarea>
+        </div>
+      </div>
+      <div class="grid-2">
+        <div class="field">
+          <label for="ccLanguage">Language (label only)</label>
+          <input type="text" id="ccLanguage" placeholder="e.g. Python, JavaScript, C++" />
+        </div>
+        <div class="field">
+          <label for="ccDurationMinutes">Time limit (minutes)</label>
+          <input type="number" id="ccDurationMinutes" min="1" value="15" />
+        </div>
+      </div>
+      <div class="field">
+        <label for="ccStarterCode">Starter code (optional)</label>
+        <textarea id="ccStarterCode" rows="3" placeholder="def solve():..." style="width:100%; background:#0E1219; border:1px solid var(--border); color:var(--text); border-radius:var(--radius); padding:11px 12px; font-size:13px; font-family:var(--font-display); resize:vertical;"></textarea>
+      </div>
+
+      <div style="display:flex; gap:10px; flex-wrap:wrap; margin-top:6px;">
+        <button class="btn btn-primary" id="ccReleaseBtn">Release problem statement</button>
+        <button class="btn" id="ccSaveDraftBtn">Save draft</button>
+        <button class="btn btn-danger" id="ccUnpublishBtn">Unpublish</button>
+      </div>
+
+      <div class="panel-head" style="margin-top:26px;">
+        <div class="panel-title" style="font-size:13px;">Code submissions</div>
+        <div class="panel-sub" id="ccSubCount">0 submitted</div>
+      </div>
+      <p class="panel-sub" style="margin-bottom:12px;">
+        Award points per submission — there's no auto-grader for free-form code, so this score
+        feeds directly into each participant's final combined result.
+      </p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Name</th><th>Lab</th><th>Terminal</th><th>Submitted</th><th>Score (/100)</th><th></th></tr></thead>
+          <tbody id="ccSubmissionsBody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ADMIN ACCOUNTS -->
+    <section class="panel" id="adminAccountsPanel">
+      <div class="panel-head">
+        <div class="panel-title"><span class="n">06</span>Admin accounts</div>
+        <div class="panel-sub">Fetched live from Firebase — not just the default in firebase-config.js</div>
+      </div>
+
+      <div class="table-wrap" style="margin-bottom:20px;">
+        <table>
+          <thead><tr><th>Email</th><th>Added</th></tr></thead>
+          <tbody id="adminTableBody"></tbody>
+        </table>
+      </div>
+
+      <form id="addAdminForm">
+        <div class="grid-2">
+          <div class="field">
+            <label for="newAdminEmail">New admin email</label>
+            <input type="email" id="newAdminEmail" placeholder="cohost@example.com" required />
+          </div>
+          <div class="field">
+            <label for="newAdminPassword">Temporary password</label>
+            <input type="password" id="newAdminPassword" placeholder="At least 6 characters" minlength="6" required />
+          </div>
+        </div>
+        <button type="submit" class="btn btn-primary" id="addAdminBtn">Add admin</button>
+        <div class="error-msg" id="addAdminError"></div>
+      </form>
+    </section>
+
+    <!-- DANGER ZONE -->
+    <section class="panel" id="dangerZonePanel" style="border-color: rgba(251,91,91,0.35);">
+      <div class="panel-head">
+        <div class="panel-title" style="color:var(--hard);"><span class="n">07</span>Danger zone</div>
+        <div class="panel-sub">For starting a fresh run with a new group of participants</div>
+      </div>
+      <div style="display:flex; gap:10px; flex-wrap:wrap;">
+        <button class="btn btn-danger" id="resetSessionBtn">Reset entire session</button>
+      </div>
+      <p class="panel-sub" style="margin-top:12px;">
+        Clears participants, scores, the leaderboard, and the coding challenge, and resets the
+        timer and release grid. Question content and admin accounts are kept.
+      </p>
+    </section>
+
+  </div>
+
+  <div class="footer-note">CodeQuest control room — everything here broadcasts live to all connected participants.</div>
+</div>
+
+<!-- QUESTION EDITOR MODAL -->
+<div id="qModalOverlay" class="modal-overlay hidden">
+  <div class="panel">
+    <div class="panel-head">
+      <div class="panel-title" id="qModalTitle">Add question</div>
+      <button class="btn btn-sm btn-ghost" id="qModalClose">✕</button>
+    </div>
+    <form id="qForm">
+      <input type="hidden" id="qLetter" />
+      <div class="grid-2">
+        <div class="field">
+          <label>Release key (letter)</label>
+          <select id="qLetterSelect" required></select>
+        </div>
+        <div class="field">
+          <label>Serial no.</label>
+          <input type="number" id="qSerial" min="1" required />
+        </div>
+      </div>
+      <div class="field">
+        <label>Question text</label>
+        <input type="text" id="qText" required />
+      </div>
+      <div class="field">
+        <label>Options (select the correct one)</label>
+        <div id="optionRows"></div>
+      </div>
+      <div class="grid-3">
+        <div class="field">
+          <label>Score value</label>
+          <input type="number" id="qScore" min="1" required />
+        </div>
+        <div class="field">
+          <label>Time limit (seconds)</label>
+          <input type="number" id="qTimeLimit" min="10" step="5" required />
+        </div>
+        <div class="field">
+          <label>Difficulty (auto from key)</label>
+          <input type="text" id="qDifficulty" disabled />
+        </div>
+      </div>
+      <div style="display:flex; gap:10px; justify-content:flex-end; margin-top:8px;">
+        <button type="button" class="btn btn-danger hidden" id="qDeleteBtn">Delete</button>
+        <button type="submit" class="btn btn-primary">Save question</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- SUBMISSION VIEWER MODAL -->
+<div id="ccSubModalOverlay" class="modal-overlay wide hidden">
+  <div class="panel">
+    <div class="panel-head">
+      <div class="panel-title" id="ccSubModalTitle">Submission</div>
+      <button class="btn btn-sm btn-ghost" id="ccSubModalClose">✕</button>
+    </div>
+    <pre id="ccSubModalCode" style="white-space:pre-wrap; word-break:break-word; background:#0E1219; border:1px solid var(--border); border-radius:var(--radius); padding:14px; font-family:var(--font-display); font-size:13px; color:var(--text); margin:0;"></pre>
+  </div>
+</div>
+
+<div class="toast-container" id="toastContainer"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script type="module" src="js/admin.js"></script>
+</body>
+</html>
