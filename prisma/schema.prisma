@@ -3,18 +3,19 @@ generator client {
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
 model User {
-  id            String   @id @default(uuid())
-  name          String
-  email         String   @unique
-  college_id    String
-  role          String   @default("PARTICIPANT") // "ADMIN" | "PARTICIPANT"
-  password_hash String
-  created_at    DateTime @default(now())
+  id              String   @id @default(uuid())
+  name            String
+  email           String   @unique
+  college_id      String
+  terminal_number String?
+  role            String   @default("PARTICIPANT") // "ADMIN" | "PARTICIPANT"
+  password_hash   String
+  created_at      DateTime @default(now())
 
   createdQuestions Question[] @relation("AdminQuestions")
   sessions         Session[]

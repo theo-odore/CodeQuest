@@ -1,5 +1,6 @@
 import express from 'express';
-import { prisma } from '../db.js';
+import crypto from 'crypto';
+import { supabase } from '../supabase.js';
 import { authenticateToken, requireParticipant } from '../middleware/auth.js';
 import { writeRateLimiter } from '../middleware/rateLimit.js';
 import { getOrUpdateSessionState } from '../services/timerService.js';
@@ -17,7 +18,6 @@ router.post('/', authenticateToken, requireParticipant, writeRateLimiter, async 
       return res.status(400).json({ error: 'question_id and answer_text are required' });
     }
 
-    // Verify participant's session state and timer
     const state = await getOrUpdateSessionState(req.user.id);
     if (state.status !== 'IN_PROGRESS') {
       return res.status(403).json({
@@ -26,23 +26,22 @@ router.post('/', authenticateToken, requireParticipant, writeRateLimiter, async 
       });
     }
 
-    const question = await prisma.question.findUnique({
-      where: { id: question_id },
-      include: { testCases: true }
-    });
+    const { data: question } = await supabase
+      .from('questions')
+      .select('*, testCases:test_cases(*)')
+      .eq('id', question_id)
+      .single();
 
     if (!question) {
       return res.status(404).json({ error: 'Question not found' });
     }
 
-    // Verify question matches current session phase
     if (question.phase !== state.current_phase) {
       return res.status(403).json({
         error: `Cannot attempt question from phase '${question.phase}' while session is in phase '${state.current_phase}'`,
       });
     }
 
-    // Server-side correctness & grading calculation
     let isCorrect = null;
     let testCasesPassed = 0;
     let totalTestCases = 0;
@@ -57,7 +56,6 @@ router.post('/', authenticateToken, requireParticipant, writeRateLimiter, async 
       const expectedOutput = String(question.expected_output).trim();
       isCorrect = userOutput === expectedOutput;
     } else if (question.type === 'CODE_WRITE') {
-      // Auto-Grade Phase 3 Code Submissions against Test Cases
       const testCases = question.testCases || [];
       gradingResult = await gradeCodeWrite(String(answer_text), question, testCases);
 
@@ -66,30 +64,36 @@ router.post('/', authenticateToken, requireParticipant, writeRateLimiter, async 
       totalTestCases = gradingResult.total_test_cases;
     }
 
-    // Upsert attempt (user can re-submit answer for a question while in phase)
-    const existingAttempt = await prisma.attempt.findFirst({
-      where: {
-        user_id: req.user.id,
-        question_id: question.id,
-      },
-    });
+    const { data: existingAttempt } = await supabase
+      .from('attempts')
+      .select('*')
+      .eq('user_id', req.user.id)
+      .eq('question_id', question.id)
+      .maybeSingle();
 
     let attempt;
     if (existingAttempt) {
-      attempt = await prisma.attempt.update({
-        where: { id: existingAttempt.id },
-        data: {
+      const { data: updated, error: uErr } = await supabase
+        .from('attempts')
+        .update({
           answer_text: String(answer_text),
           is_correct: isCorrect,
           test_cases_passed: testCasesPassed,
           total_test_cases: totalTestCases,
           time_taken_sec: Number(time_taken_sec) || 0,
-          answered_at: new Date(),
-        },
-      });
+          answered_at: new Date().toISOString(),
+        })
+        .eq('id', existingAttempt.id)
+        .select()
+        .single();
+
+      if (uErr) throw uErr;
+      attempt = updated;
     } else {
-      attempt = await prisma.attempt.create({
-        data: {
+      const { data: created, error: cErr } = await supabase
+        .from('attempts')
+        .insert({
+          id: crypto.randomUUID(),
           user_id: req.user.id,
           question_id: question.id,
           answer_text: String(answer_text),
@@ -97,11 +101,14 @@ router.post('/', authenticateToken, requireParticipant, writeRateLimiter, async 
           test_cases_passed: testCasesPassed,
           total_test_cases: totalTestCases,
           time_taken_sec: Number(time_taken_sec) || 0,
-        },
-      });
+        })
+        .select()
+        .single();
+
+      if (cErr) throw cErr;
+      attempt = created;
     }
 
-    // Broadcast attempt to admin live feed
     notifyAdmin('ATTEMPT_SUBMITTED', {
       user_id: req.user.id,
       user_name: req.user.name,
@@ -120,13 +127,8 @@ router.post('/', authenticateToken, requireParticipant, writeRateLimiter, async 
       attempt: {
         id: attempt.id,
         question_id: attempt.question_id,
-        answer_text: attempt.answer_text,
-        is_correct: isCorrect,
-        test_cases_passed: testCasesPassed,
-        total_test_cases: totalTestCases,
         answered_at: attempt.answered_at,
       },
-      grading: gradingResult
     });
   } catch (error) {
     console.error('Submit attempt error:', error);

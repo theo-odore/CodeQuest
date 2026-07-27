@@ -1,5 +1,5 @@
 import express from 'express';
-import { prisma } from '../db.js';
+import { supabase } from '../supabase.js';
 import { authenticateToken } from '../middleware/auth.js';
 import { getOrUpdateSessionState } from '../services/timerService.js';
 
@@ -8,40 +8,31 @@ const router = express.Router();
 // GET /questions?phase=easy|medium|hard
 router.get('/', authenticateToken, async (req, res) => {
   try {
-    const requestedPhase = (req.query.phase || 'EASY').toUpperCase();
-
-    if (!['EASY', 'MEDIUM', 'HARD'].includes(requestedPhase)) {
-      return res.status(400).json({ error: 'Invalid phase parameter. Must be easy, medium, or hard.' });
+    let requestedPhase = (req.query.phase || 'EASY').toUpperCase();
+    if (requestedPhase === 'INTERMEDIATE') {
+      requestedPhase = 'MEDIUM';
     }
 
-    // For participants, check session state
+    if (!['EASY', 'MEDIUM', 'HARD'].includes(requestedPhase)) {
+      return res.status(400).json({ error: 'Invalid phase parameter. Must be easy, medium/intermediate, or hard.' });
+    }
+
     if (req.user.role === 'PARTICIPANT' && req.query.demo !== 'true') {
       const state = await getOrUpdateSessionState(req.user.id);
-
       if (state.status !== 'IN_PROGRESS') {
-        console.log(`Session status for ${req.user.email} is '${state.status}'. Allowing question preview.`);
+        console.log(`Session status for ${req.user.email} is '${state.status}'.`);
       }
     }
 
-    // Fetch questions for requested phase with test cases
-    const questions = await prisma.question.findMany({
-      where: { phase: requestedPhase },
-      include: {
-        testCases: {
-          select: {
-            id: true,
-            stdin: true,
-            expected_output: true,
-            is_hidden: true,
-            weight: true
-          }
-        }
-      },
-      orderBy: { created_at: 'asc' },
-    });
+    const { data: questions, error: qErr } = await supabase
+      .from('questions')
+      .select('*, testCases:test_cases(*)')
+      .eq('phase', requestedPhase)
+      .order('created_at', { ascending: true });
 
-    // Sanitize questions for participants (hide answer keys & hidden testcase outputs)
-    const sanitizedQuestions = questions.map((q) => {
+    if (qErr) throw qErr;
+
+    const sanitizedQuestions = (questions || []).map((q) => {
       const isParticipant = req.user.role === 'PARTICIPANT';
 
       const visibleTestCases = (q.testCases || []).map(tc => {

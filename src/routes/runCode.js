@@ -1,28 +1,21 @@
 import express from 'express';
-import axios from 'axios';
+import crypto from 'crypto';
 import { execFile } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { prisma } from '../db.js';
+import { supabase } from '../supabase.js';
 import { authenticateToken, requireParticipant } from '../middleware/auth.js';
 import { runCodeRateLimiter } from '../middleware/rateLimit.js';
-import { getOrUpdateSessionState } from '../services/timerService.js';
 
 const router = express.Router();
-const PISTON_API_URL = process.env.PISTON_API_URL || 'https://emkc.org/api/v2/piston';
 
-/**
- * Wraps submitted code so that if participant defines a function (e.g. def reverse_words(s):)
- * but didn't write an explicit print call, it automatically calls the function with stdin.
- */
 function prepareExecutableCode(code, question, stdinVal = '') {
   let script = code + '\n\n';
   if (question && question.function_name) {
     const fnName = question.function_name;
     const matches = (code.match(new RegExp(`${fnName}\\s*\\(`, 'g')) || []).length;
 
-    // If only defined once (i.e., 'def fnName(') or not called explicitly, append runner call
     if (matches <= 1) {
       script += `
 import sys, ast
@@ -59,9 +52,6 @@ if _FN_NAME in globals():
   return script;
 }
 
-/**
- * Fallback executor: Runs Python code locally using child_process with timeout & stdin support
- */
 function executeLocalPython(code, stdin = '') {
   return new Promise((resolve) => {
     const tmpDir = os.tmpdir();
@@ -99,73 +89,87 @@ router.post('/', authenticateToken, requireParticipant, runCodeRateLimiter, asyn
   try {
     const { question_id, code, language = 'python', stdin = '' } = req.body;
 
-    if (!question_id || !code) {
-      return res.status(400).json({ error: 'question_id and code are required' });
+    if (!code) {
+      return res.status(400).json({ error: 'code is required' });
     }
 
-    const question = await prisma.question.findUnique({ where: { id: question_id } });
+    let question = null;
+    if (question_id) {
+      const { data: qData } = await supabase
+        .from('questions')
+        .select('*, testCases:test_cases(*)')
+        .eq('id', question_id)
+        .maybeSingle();
+      question = qData;
+    }
 
-    // Prepare executable code with function wrapper if needed
-    const codeToRun = prepareExecutableCode(code, question, stdin);
+    const testCases = (question && question.testCases && question.testCases.length > 0)
+      ? question.testCases
+      : [{ stdin, expected_output: '', is_hidden: false }];
 
-    let stdout = '';
-    let stderr = '';
-    let exitCode = 0;
-    let executionSource = 'Piston API';
+    const results = [];
+    let overallStdout = '';
+    let overallStderr = '';
+    let overallExitCode = 0;
 
-    // Attempt 1: Piston API
-    try {
-      const pistonResponse = await axios.post(`${PISTON_API_URL}/execute`, {
-        language: language.toLowerCase(),
-        version: '*',
-        files: [{ content: codeToRun }],
-        stdin: stdin,
-      }, { timeout: 4000 });
+    for (let i = 0; i < testCases.length; i++) {
+      const tc = testCases[i];
+      const tcInput = tc.stdin !== undefined ? tc.stdin : stdin;
+      const codeToRun = prepareExecutableCode(code, question, tcInput);
 
-      const runData = pistonResponse.data?.run || {};
-      if (runData.stderr && runData.stderr.includes('whitelist only')) {
-        throw new Error('Piston whitelist restricted');
+      let stdout = '';
+      let stderr = '';
+      let exitCode = 0;
+
+      try {
+        const localResult = await executeLocalPython(codeToRun, tcInput);
+        stdout = (localResult.stdout || '').trim();
+        stderr = (localResult.stderr || '').trim();
+        exitCode = localResult.exitCode;
+      } catch (err) {
+        stderr = err.message;
+        exitCode = 1;
       }
 
-      stdout = runData.stdout || '';
-      stderr = runData.stderr || '';
-      exitCode = runData.code !== undefined ? runData.code : 0;
-    } catch (pistonError) {
-      // Fallback 2: Execute locally using system Python
-      console.log('⚡ Piston API unavailable or restricted. Falling back to local Python engine...');
-      executionSource = 'Local Engine';
+      if (i === 0) {
+        overallStdout = stdout;
+        overallStderr = stderr;
+        overallExitCode = exitCode;
+      }
 
-      const localResult = await executeLocalPython(codeToRun, stdin);
-      stdout = localResult.stdout;
-      stderr = localResult.stderr;
-      exitCode = localResult.exitCode;
+      const expectedStr = (tc.expected_output || '').trim();
+      const isMatch = (exitCode === 0) && (!stderr) && (expectedStr === '' || stdout === expectedStr);
+
+      results.push({
+        index: i + 1,
+        passed: isMatch,
+        stdin: tc.is_hidden ? '[HIDDEN TEST CASE]' : tcInput,
+        expected_output: tc.is_hidden ? '[HIDDEN TEST CASE]' : tc.expected_output,
+        actual_output: tc.is_hidden ? (isMatch ? '[PASSED]' : '[FAILED]') : stdout,
+        stderr,
+        is_hidden: tc.is_hidden,
+      });
     }
 
-    // Record execution in RunLog
-    let runLogId = null;
     if (question) {
-      const runLog = await prisma.runLog.create({
-        data: {
-          user_id: req.user.id,
-          question_id,
-          submitted_code: code,
-          stdin,
-          stdout,
-          stderr,
-        },
+      await supabase.from('run_logs').insert({
+        id: crypto.randomUUID(),
+        user_id: req.user.id,
+        question_id: question.id,
+        submitted_code: code,
+        stdin,
+        stdout: overallStdout,
+        stderr: overallStderr,
       });
-      runLogId = runLog.id;
     }
 
     res.json({
-      message: `Code executed successfully via ${executionSource}`,
-      execution_source: executionSource,
-      run_log_id: runLogId,
-      runs_left: req.runsLeft,
+      message: 'Code executed successfully',
+      results,
       result: {
-        stdout,
-        stderr,
-        exit_code: exitCode,
+        stdout: overallStdout,
+        stderr: overallStderr,
+        exit_code: overallExitCode,
       },
     });
   } catch (error) {

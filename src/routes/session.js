@@ -1,5 +1,6 @@
 import express from 'express';
-import { prisma } from '../db.js';
+import crypto from 'crypto';
+import { supabase } from '../supabase.js';
 import { authenticateToken, requireParticipant } from '../middleware/auth.js';
 import { writeRateLimiter } from '../middleware/rateLimit.js';
 import { getOrUpdateSessionState, finalizeSession, TOTAL_QUIZ_DURATION_SEC } from '../services/timerService.js';
@@ -7,7 +8,6 @@ import { notifyAdmin } from '../websocket.js';
 
 const router = express.Router();
 
-// Apply authentication to all session routes
 router.use(authenticateToken, requireParticipant);
 
 // GET /session/status
@@ -21,36 +21,52 @@ router.get('/status', async (req, res) => {
   }
 });
 
-// POST /session/start (Starts or Resets quiz session to IN_PROGRESS)
+// POST /session/start
 router.post('/start', writeRateLimiter, async (req, res) => {
   try {
-    let session = await prisma.session.findFirst({ where: { user_id: req.user.id } });
-    const now = new Date();
+    const { data: existingSession } = await supabase
+      .from('sessions')
+      .select('*')
+      .eq('user_id', req.user.id)
+      .maybeSingle();
 
-    if (session) {
-      // Clear previous attempts for a fresh session run
-      await prisma.attempt.deleteMany({ where: { user_id: req.user.id } });
+    const now = new Date().toISOString();
+    let session = null;
 
-      session = await prisma.session.update({
-        where: { id: session.id },
-        data: {
+    if (existingSession) {
+      await supabase.from('attempts').delete().eq('user_id', req.user.id);
+
+      const { data: updatedSession, error: updateErr } = await supabase
+        .from('sessions')
+        .update({
           start_time: now,
           end_time: null,
           status: 'IN_PROGRESS',
           current_phase: 'EASY',
           auto_score: 0,
           total_time_sec: 0,
-        },
-      });
+        })
+        .eq('id', existingSession.id)
+        .select()
+        .single();
+
+      if (updateErr) throw updateErr;
+      session = updatedSession;
     } else {
-      session = await prisma.session.create({
-        data: {
+      const { data: newSession, error: createErr } = await supabase
+        .from('sessions')
+        .insert({
+          id: crypto.randomUUID(),
           user_id: req.user.id,
           start_time: now,
           status: 'IN_PROGRESS',
           current_phase: 'EASY',
-        },
-      });
+        })
+        .select()
+        .single();
+
+      if (createErr) throw createErr;
+      session = newSession;
     }
 
     notifyAdmin('SESSION_STARTED', {
@@ -85,12 +101,16 @@ router.post('/phase/advance', writeRateLimiter, async (req, res) => {
 
     if (currentPhase === 'EASY') nextPhase = 'MEDIUM';
     else if (currentPhase === 'MEDIUM') nextPhase = 'HARD';
-    else return res.status(400).json({ error: 'Already at final phase (HARD). Submit session when finished.' });
+    else return res.status(400).json({ error: 'Already at final phase (HARD).' });
 
-    const updatedSession = await prisma.session.update({
-      where: { id: state.session.id },
-      data: { current_phase: nextPhase },
-    });
+    const { data: updatedSession, error: updateErr } = await supabase
+      .from('sessions')
+      .update({ current_phase: nextPhase })
+      .eq('id', state.session.id)
+      .select()
+      .single();
+
+    if (updateErr) throw updateErr;
 
     notifyAdmin('PHASE_ADVANCED', {
       user_id: req.user.id,
@@ -113,7 +133,11 @@ router.post('/phase/advance', writeRateLimiter, async (req, res) => {
 // POST /session/submit
 router.post('/submit', writeRateLimiter, async (req, res) => {
   try {
-    const session = await prisma.session.findFirst({ where: { user_id: req.user.id } });
+    const { data: session } = await supabase
+      .from('sessions')
+      .select('*')
+      .eq('user_id', req.user.id)
+      .maybeSingle();
 
     if (!session) {
       return res.status(404).json({ error: 'No quiz session found' });
