@@ -1,0 +1,113 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id            String   @id @default(uuid())
+  name          String
+  email         String   @unique
+  college_id    String
+  role          String   @default("PARTICIPANT") // "ADMIN" | "PARTICIPANT"
+  password_hash String
+  created_at    DateTime @default(now())
+
+  createdQuestions Question[] @relation("AdminQuestions")
+  sessions         Session[]
+  attempts         Attempt[]
+  runLogs          RunLog[]
+
+  @@map("users")
+}
+
+model Question {
+  id                  String   @id @default(uuid())
+  phase               String   // "EASY" | "MEDIUM" | "HARD"
+  type                String   // "MCQ" | "OUTPUT_PREDICT" | "CODE_WRITE"
+  text                String
+  code_snippet        String?
+  option_a            String?
+  option_b            String?
+  option_c            String?
+  option_d            String?
+  correct_option      String?  // e.g. "A", "B", "C", "D" for MCQ
+  expected_output     String?  // Exact output for OUTPUT_PREDICT
+  function_name       String?  // Exact function name for CODE_WRITE auto-grading
+  function_signature  String?  // e.g. "def reverse_words(sentence):"
+  points              Int      @default(10)
+  created_by_admin_id String?
+  created_at          DateTime @default(now())
+
+  created_by_admin    User?      @relation("AdminQuestions", fields: [created_by_admin_id], references: [id], onDelete: SetNull)
+  attempts            Attempt[]
+  runLogs             RunLog[]
+  testCases           TestCase[]
+
+  @@map("questions")
+}
+
+model TestCase {
+  id              String   @id @default(uuid())
+  question_id     String
+  stdin           String
+  expected_output String
+  is_hidden       Boolean  @default(false)
+  weight          Int      @default(1)
+  created_at      DateTime @default(now())
+
+  question        Question @relation(fields: [question_id], references: [id], onDelete: Cascade)
+
+  @@map("test_cases")
+}
+
+model Session {
+  id             String    @id @default(uuid())
+  user_id        String
+  start_time     DateTime?
+  end_time       DateTime?
+  current_phase  String    @default("EASY") // "EASY" | "MEDIUM" | "HARD"
+  status         String    @default("NOT_STARTED") // "NOT_STARTED" | "IN_PROGRESS" | "SUBMITTED"
+  auto_score     Int       @default(0)
+  total_time_sec Int       @default(0)
+
+  user           User      @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@map("sessions")
+}
+
+model Attempt {
+  id                String   @id @default(uuid())
+  user_id           String
+  question_id       String
+  answer_text       String
+  is_correct        Boolean? // null or boolean
+  test_cases_passed Int      @default(0)
+  total_test_cases  Int      @default(0)
+  time_taken_sec    Int      @default(0)
+  answered_at       DateTime @default(now())
+
+  user              User     @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  question          Question @relation(fields: [question_id], references: [id], onDelete: Cascade)
+
+  @@map("attempts")
+}
+
+model RunLog {
+  id             String   @id @default(uuid())
+  user_id        String
+  question_id    String
+  submitted_code String
+  stdin          String?
+  stdout         String?
+  stderr         String?
+  ran_at         DateTime @default(now())
+
+  user           User     @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  question       Question @relation(fields: [question_id], references: [id], onDelete: Cascade)
+
+  @@map("run_logs")
+}
